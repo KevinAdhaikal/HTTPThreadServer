@@ -12,6 +12,7 @@
 #include <unistd.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
+#include <fcntl.h>
 #endif
 
 int find_char_num(const char* str, char ch_find) {
