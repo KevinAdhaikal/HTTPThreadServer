@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <pthread.h>
+#include <stdbool.h>
 
 #ifdef _WIN32
 #include <winsock2.h>
@@ -116,6 +117,28 @@ int http_send_file(http_event* e, const char* filename) {
     }
 }
 
+void http_get_header(http_event* e, const char* header_name, char* dest, size_t destLen) {
+    const char* header_start = strstr(e->headers.raw_header, header_name);
+
+    if (header_start) {
+        header_start += strlen(header_name);
+        header_start = strchr(header_start, ':');
+        if (header_start) {
+            header_start++;
+            while (*header_start == ' ') header_start++;
+            const char* header_end = strchr(header_start, '\r');
+            if (header_end) {
+                size_t value_len = header_end - header_start;
+                if (value_len < destLen) {
+                    strncpy(dest, header_start, value_len);
+                    dest[value_len] = '\0';
+                }
+            }
+        }
+    }
+}
+
+
 void *client_handler(void *arg) {
     http_thread_args *args = (http_thread_args *)arg;
 
@@ -152,6 +175,14 @@ void *client_handler(void *arg) {
         strncpy(event.headers.path, event.headers.raw_header + method_len, path_len);
         event.headers.method[method_len] = '\0';
         event.headers.path[path_len] = '\0';
+    }
+    else {
+        #ifdef _WIN32
+        closesocket(args->client_socket);
+        #else
+        close(args->client_socket);
+        #endif
+        free(args);
     }
 
     event.client_sock = args->client_socket;
