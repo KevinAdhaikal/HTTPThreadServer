@@ -2,7 +2,7 @@
 #define HTTPLIBRARY_H
 
 #include <stdio.h>
-#ifdef __WIN32
+#ifdef _WIN32
 #include <winsock2.h>
 #endif
 

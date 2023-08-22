@@ -3,16 +3,16 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <pthread.h>
 
 #ifdef _WIN32
 #include <winsock2.h>
 #include <ws2tcpip.h>
+#include <windows.h>
 #else
+#include <pthread.h>
 #include <unistd.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
-#include <fcntl.h>
 #endif
 
 int find_char_num(const char* str, char ch_find) {
@@ -185,6 +185,10 @@ void *client_handler(void *arg) {
             free(args);
 
             if (event.headers.raw_header) free(event.headers.raw_header);
+
+            #ifdef _WIN32
+            ExitThread(0);
+            #endif
             return NULL;
         }
         else if (tempLen < 0) break;
@@ -211,6 +215,9 @@ void *client_handler(void *arg) {
         #endif
         free(args);
         if (event.headers.raw_header) free(event.headers.raw_header);
+        #ifdef _WIN32
+        ExitThread(0);
+        #endif
         return NULL;
     }
 
@@ -232,6 +239,9 @@ void *client_handler(void *arg) {
         close(args->client_socket);
     #endif
     free(args);
+    #ifdef _WIN32
+    ExitThread(0);
+    #endif
     return NULL;
 }
 
@@ -305,19 +315,19 @@ void httpRun(int server_socket, http_callback callback) {
         args->client_socket = client_socket;
         args->callback = callback;
 
+        #ifdef _WIN32
+        HANDLE thread;
+        thread = CreateThread(NULL, 0, (LPTHREAD_START_ROUTINE)client_handler, (LPVOID)args, 0, NULL);
+        #else
         pthread_t thread;
         if (pthread_create(&thread, NULL, client_handler, args) != 0) {
             perror("Thread creation failed");
             free(args);
-#ifdef _WIN32
-            closesocket(client_socket);
-#else
             close(client_socket);
-#endif
             continue;
         }
-
         pthread_detach(thread);
+        #endif
     }
 
 #ifdef _WIN32
