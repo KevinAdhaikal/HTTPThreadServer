@@ -4,7 +4,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <pthread.h>
-#include <stdbool.h>
 
 #ifdef _WIN32
 #include <winsock2.h>
@@ -183,6 +182,8 @@ void *client_handler(void *arg) {
         close(args->client_socket);
         #endif
         free(args);
+        if (event.headers.raw_header) free(event.headers.raw_header);
+        return NULL;
     }
 
     event.client_sock = args->client_socket;
