@@ -116,7 +116,7 @@ int http_send_file(http_event* e, const char* filename) {
     }
 }
 
-void http_get_header(http_event* e, const char* header_name, char* dest, size_t destLen) {
+void http_get_header(http_event* e, const char* header_name, char* dest, size_t dest_len) {
     const char* header_start = strstr(e->headers.raw_header, header_name);
 
     if (header_start) {
@@ -128,7 +128,7 @@ void http_get_header(http_event* e, const char* header_name, char* dest, size_t 
             const char* header_end = strchr(header_start, '\r');
             if (header_end) {
                 size_t value_len = header_end - header_start;
-                if (value_len < destLen) {
+                if (value_len < dest_len) {
                     strncpy(dest, header_start, value_len);
                     dest[value_len] = '\0';
                 }
@@ -137,6 +137,33 @@ void http_get_header(http_event* e, const char* header_name, char* dest, size_t 
     }
 }
 
+void http_get_cookie(http_event* e, const char *cookie_name, char *dest, size_t dest_len) {
+    const char *cookie_start = strstr(e->headers.raw_header, cookie_name);
+    
+    if (cookie_start) {
+        cookie_start += strlen(cookie_name);
+        
+        if (cookie_start[0] == '=') {
+            cookie_start++;
+            
+            const char *cookie_value_end = strchr(cookie_start, ';');
+            
+            if (!cookie_value_end) cookie_value_end = strchr(cookie_start, '\r');
+            
+            if (cookie_value_end) {
+                size_t cookie_value_len = cookie_value_end - cookie_start;
+                
+                if (cookie_value_len < dest_len) {
+                    strncpy(dest, cookie_start, cookie_value_len);
+                    dest[cookie_value_len] = '\0';
+                    return;
+                }
+            }
+        }
+    }
+    
+    dest[0] = '\0';
+}
 
 void *client_handler(void *arg) {
     http_thread_args *args = (http_thread_args *)arg;
