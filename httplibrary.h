@@ -2,9 +2,7 @@
 #define HTTPLIBRARY_H
 
 #include <stdio.h>
-#ifdef _WIN32
-#include <winsock2.h>
-#endif
+#include <string.h>
 
 typedef struct {
     char method[16];
@@ -20,8 +18,8 @@ typedef struct {
 } http_buffer;
 
 typedef struct {
-    int client_sock;
     char state;
+    int client_sock;
     http_header headers;
     http_buffer server_buffer;
 } http_event;
@@ -31,11 +29,11 @@ typedef void (*http_callback)(http_event*);
 typedef struct {
     http_callback callback;
     int client_socket;
-} http_thread_args;
+    struct fd_set* master_fds;
+} http_thread;
 
-int httpInit(short port);
-void httpRun(int server_socket, http_callback callback);
-
+int http_init(short port);
+void http_start(int server_fd, http_callback callback);
 void http_buffer_init(http_event* e, int initial_capacity);
 void http_buffer_resize(http_buffer* b, int new_capacity);
 void http_buffer_append(http_event* e, const char *data, int len);

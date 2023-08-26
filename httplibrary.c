@@ -1,19 +1,23 @@
-#include "httplibrary.h"
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
+#include <pthread.h>
 
-#ifdef _WIN32
+#ifdef __WIN32
 #include <winsock2.h>
-#include <ws2tcpip.h>
 #include <windows.h>
 #else
-#include <pthread.h>
-#include <unistd.h>
+#include <arpa/inet.h>
 #include <sys/socket.h>
+#include <sys/types.h>
 #include <netinet/in.h>
+#include <fcntl.h>
 #endif
+
+#include "httplibrary.h"
+
+typedef void (*http_callback)(http_event*);
 
 int find_char_num(const char* str, char ch_find) {
     if (!str) return -1;
@@ -47,7 +51,7 @@ void http_buffer_resize(http_buffer* b, int new_capacity) {
 }
 
 void http_buffer_append(http_event* e, const char *data, int len) {
-    if (e->state == 0) http_buffer_init(e, 4096);
+    if (e->state == 0) http_buffer_init(e, 1024);
     http_buffer* b = &e->server_buffer;
 
     if (b->len + len > b->capacity) {
@@ -70,7 +74,7 @@ void http_buffer_free(http_buffer* b) {
 }
 
 void http_send_status(http_event* e, int status, const char *val) {
-    if (e->state == 0) http_buffer_init(e, 4096);
+    if (e->state == 0) http_buffer_init(e, 1024);
     char response[128];
     int response_length = snprintf(response, sizeof(response), "HTTP/1.1 %d %s\r\n", status, val);
     http_buffer_append(e, response, response_length);
@@ -78,7 +82,7 @@ void http_send_status(http_event* e, int status, const char *val) {
 }
 
 void http_send_header(http_event* e, const char *name, const char *val) {
-    if (e->state == 0) http_buffer_init(e, 4096);
+    if (e->state == 0) http_buffer_init(e, 1024);
     if (e->state == 1) http_send_status(e, 200, "OK");
     char header[256];
     int header_length = snprintf(header, sizeof(header), "%s: %s\r\n", name, val);
@@ -87,7 +91,7 @@ void http_send_header(http_event* e, const char *name, const char *val) {
 }
 
 void http_write(http_event* e, const char *data, int len) {
-    if (e->state == 0) http_buffer_init(e, 4096);
+    if (e->state == 0) http_buffer_init(e, 1024);
     if (e->state == 1) http_send_status(e, 200, "OK");
     if (e->state == 2) http_buffer_append(e, "\r\n", 2), e->state++;
     http_buffer_append(e, data, !len ? strlen(data) : len);
@@ -166,36 +170,28 @@ void http_get_cookie(http_event* e, const char *cookie_name, char *dest, size_t 
     dest[0] = '\0';
 }
 
-void *client_handler(void *arg) {
-    http_thread_args *args = (http_thread_args *)arg;
-
+void *handle_client(void *arg) {
+    http_thread* thread_data = (http_thread*)arg;
     http_event event = {0};
-    char tempReq[4096];
-    int tempLen = 0;
+    char temp_req[4096];
+    int temp_len = 0;
 
     while(1) {
-        tempLen = recv(args->client_socket, tempReq, 4095, 0);
-
-        if (tempLen == 0) {
-            #ifdef _WIN32
-            closesocket(args->client_socket);
-            #else
-            close(args->client_socket);
-            #endif
-            free(args);
-
+        temp_len = recv(thread_data->client_socket, temp_req, 4095, 0);
+        if (temp_len == 0) {
             if (event.headers.raw_header) free(event.headers.raw_header);
-
-            #ifdef _WIN32
-            ExitThread(0);
+            #ifdef __WIN32
+            closesocket(thread_data->client_socket);
+            #else
+            close(thread_data->client_socket);
             #endif
+            free(thread_data);
             return NULL;
-        }
-        else if (tempLen < 0) break;
+        } else if (temp_len == -1) break;
 
-        event.headers.raw_header = realloc(event.headers.raw_header, event.headers.raw_len + tempLen + 1);
-        memcpy(event.headers.raw_header + event.headers.raw_len, tempReq, tempLen);
-        event.headers.raw_len += tempLen;
+        event.headers.raw_header = realloc(event.headers.raw_header, event.headers.raw_len + temp_len + 1);
+        memcpy(event.headers.raw_header + event.headers.raw_len, temp_req, temp_len);
+        event.headers.raw_len += temp_len;
         event.headers.raw_header[event.headers.raw_len] = '\0';
     }
 
@@ -206,134 +202,138 @@ void *client_handler(void *arg) {
         strncpy(event.headers.path, event.headers.raw_header + method_len, path_len);
         event.headers.method[method_len] = '\0';
         event.headers.path[path_len] = '\0';
-    }
-    else {
-        #ifdef _WIN32
-        closesocket(args->client_socket);
-        #else
-        close(args->client_socket);
-        #endif
-        free(args);
+    } else {
         if (event.headers.raw_header) free(event.headers.raw_header);
-        #ifdef _WIN32
-        ExitThread(0);
+        #ifdef __WIN32
+        closesocket(thread_data->client_socket);
+        #else
+        close(thread_data->client_socket);
         #endif
+        free(thread_data);
         return NULL;
     }
 
-    event.client_sock = args->client_socket;
-    args->callback(&event);
+    event.client_sock = thread_data->client_socket;
+    thread_data->callback(&event);
 
     if (event.server_buffer.len) {
         send(event.client_sock, event.server_buffer.data, event.server_buffer.len, 0);
         http_buffer_free(&event.server_buffer);
     }
 
-    if (event.headers.raw_header) {
-        free(event.headers.raw_header);
-    }
+    if (event.headers.raw_header) free(event.headers.raw_header);
 
-    #ifdef _WIN32
-        closesocket(args->client_socket);
+    #ifdef __WIN32
+    closesocket(thread_data->client_socket);
     #else
-        close(args->client_socket);
+    close(thread_data->client_socket);
     #endif
-    free(args);
-    #ifdef _WIN32
-    ExitThread(0);
-    #endif
+
+    free(thread_data);
+
     return NULL;
 }
 
-int httpInit(short port) {
-#ifdef _WIN32
-    WSADATA wsaData;
-    if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
-        perror("Error initializing Winsock");
+int http_init(short port) {
+    #ifdef __WIN32
+    WSADATA dat; 
+    if (WSAStartup(MAKEWORD(2, 2), &dat) != 0) {
+        perror("WSAStartup failed");
         return -1;
     }
-#endif
+    #endif
 
     int server_socket;
     struct sockaddr_in server_addr;
-
+    
     server_socket = socket(AF_INET, SOCK_STREAM, 0);
-
     if (server_socket == -1) {
         perror("Socket creation failed");
-#ifdef _WIN32
-        WSACleanup();
-#endif
         return -1;
     }
 
+    #ifdef __WIN32
+    u_long mode = 1;
+    if (ioctlsocket(server_socket, FIONBIO, &mode) != 0) {
+        perror("ioctlsocket failed");
+        return -1;
+    }
+    #else
+    int client_flags = fcntl(server_socket, F_GETFL, 0);
+    if (fcntl(server_socket, F_SETFL, client_flags | O_NONBLOCK) == -1) {
+        perror("fcntl failed");
+        return -1;
+    }
+    #endif
+
+    memset(&server_addr, 0, sizeof(server_addr));
     server_addr.sin_family = AF_INET;
     server_addr.sin_addr.s_addr = INADDR_ANY;
     server_addr.sin_port = htons(port);
 
     if (bind(server_socket, (struct sockaddr *)&server_addr, sizeof(server_addr)) == -1) {
-        perror("Bind failed");
-#ifdef _WIN32
-        closesocket(server_socket);
-        WSACleanup();
-#else
-        close(server_socket);
-#endif
+        perror("Socket binding failed");
         return -1;
     }
 
     if (listen(server_socket, 10) == -1) {
-        perror("Listen failed");
-#ifdef _WIN32
-        closesocket(server_socket);
-        WSACleanup();
-#else
-        close(server_socket);
-#endif
+        perror("Listening failed");
         return -1;
     }
 
     return server_socket;
 }
 
-void httpRun(int server_socket, http_callback callback) {
+void http_start(int server_socket, http_callback callback) {
+    fd_set read_fds, master_fds;
+    int max_fd;
+
+    FD_ZERO(&master_fds);
+    FD_SET(server_socket, &master_fds);
+    max_fd = server_socket;
+
     while (1) {
-        struct sockaddr_in client_addr;
-        socklen_t client_len = sizeof(client_addr);
+        read_fds = master_fds;
 
-        int client_socket = accept(server_socket, (struct sockaddr *)&client_addr, &client_len);
-
-        #ifdef _WIN32
-        u_long mode = 1;
-        ioctlsocket(client_socket, FIONBIO, &mode);
-        #else
-        int flags = fcntl(client_socket, F_GETFL);
-        fcntl(client_socket, F_SETFL, flags | O_NONBLOCK);
-        #endif
-
-        http_thread_args *args = (http_thread_args *)malloc(sizeof(http_thread_args));
-        args->client_socket = client_socket;
-        args->callback = callback;
-
-        #ifdef _WIN32
-        HANDLE thread;
-        thread = CreateThread(NULL, 0, (LPTHREAD_START_ROUTINE)client_handler, (LPVOID)args, 0, NULL);
-        #else
-        pthread_t thread;
-        if (pthread_create(&thread, NULL, client_handler, args) != 0) {
-            perror("Thread creation failed");
-            free(args);
-            close(client_socket);
-            continue;
+        if (select(max_fd + 1, &read_fds, NULL, NULL, NULL) == -1) {
+            perror("select");
+            break;
         }
-        pthread_detach(thread);
-        #endif
+
+        if (FD_ISSET(server_socket, &read_fds)) {
+            int client_socket = accept(server_socket, NULL, NULL);
+            if (client_socket > 0) {
+                FD_SET(client_socket, &master_fds);
+                if (client_socket > max_fd) max_fd = client_socket;
+            }
+        }
+
+        for (int fd = 0; fd <= max_fd; fd++) {
+            if (FD_ISSET(fd, &read_fds)) {
+                if (fd == server_socket) continue;
+
+                pthread_t thread;
+                http_thread* thread_arg = malloc(sizeof(http_thread));
+                thread_arg->client_socket = fd;
+                thread_arg->master_fds = &master_fds;
+                thread_arg->callback = callback;
+                pthread_create(&thread, NULL, handle_client, thread_arg);
+                pthread_detach(thread);
+                FD_CLR(fd, &master_fds);
+
+            }
+        }
     }
 
-#ifdef _WIN32
-    closesocket(server_socket);
-    WSACleanup();
-#else
+    for (int fd = 0; fd <= max_fd; fd++) {
+        if (FD_ISSET(fd, &master_fds)) {
+            close(fd);
+        }
+    }
+
     close(server_socket);
-#endif
+
+    #ifdef __WIN32
+    WSACleanup();
+    #endif
 }
