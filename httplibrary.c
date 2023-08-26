@@ -119,6 +119,8 @@ int http_send_file(http_event* e, const char* filename) {
         http_buffer_free(&e->server_buffer);
         fclose(fp);
     }
+
+    return 1;
 }
 
 void http_get_header(http_event* e, const char* header_name, char* dest, size_t dest_len) {
@@ -144,20 +146,20 @@ void http_get_header(http_event* e, const char* header_name, char* dest, size_t 
 
 void http_get_cookie(http_event* e, const char *cookie_name, char *dest, size_t dest_len) {
     const char *cookie_start = strstr(e->headers.raw_header, cookie_name);
-    
+
     if (cookie_start) {
         cookie_start += strlen(cookie_name);
-        
+
         if (cookie_start[0] == '=') {
             cookie_start++;
-            
+
             const char *cookie_value_end = strchr(cookie_start, ';');
-            
+
             if (!cookie_value_end) cookie_value_end = strchr(cookie_start, '\r');
-            
+
             if (cookie_value_end) {
                 size_t cookie_value_len = cookie_value_end - cookie_start;
-                
+
                 if (cookie_value_len < dest_len) {
                     strncpy(dest, cookie_start, cookie_value_len);
                     dest[cookie_value_len] = '\0';
@@ -166,7 +168,7 @@ void http_get_cookie(http_event* e, const char *cookie_name, char *dest, size_t 
             }
         }
     }
-    
+
     dest[0] = '\0';
 }
 
@@ -236,7 +238,7 @@ void *handle_client(void *arg) {
 
 int http_init(short port) {
     #ifdef __WIN32
-    WSADATA dat; 
+    WSADATA dat;
     if (WSAStartup(MAKEWORD(2, 2), &dat) != 0) {
         perror("WSAStartup failed");
         return -1;
@@ -245,7 +247,7 @@ int http_init(short port) {
 
     int server_socket;
     struct sockaddr_in server_addr;
-    
+
     server_socket = socket(AF_INET, SOCK_STREAM, 0);
     if (server_socket == -1) {
         perror("Socket creation failed");
