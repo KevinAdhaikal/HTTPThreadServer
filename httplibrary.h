@@ -6,8 +6,7 @@
 
 typedef struct {
     char method[16];
-    char path[128];
-    char query[512];
+    char path[512];
     short question_pos;
     char* raw_header;
     int raw_len;
