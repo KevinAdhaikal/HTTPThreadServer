@@ -4,7 +4,7 @@
 #include <unistd.h>
 #include <pthread.h>
 
-#ifdef __WIN32
+#ifdef _WIN32
 #include <winsock2.h>
 #include <windows.h>
 #else
@@ -172,6 +172,28 @@ void http_get_cookie(http_event* e, const char *cookie_name, char *dest, size_t 
     dest[0] = '\0';
 }
 
+void http_get_query(http_event* e, const char* param, char* value, size_t value_size) {
+    if (!e->headers.question_pos) return;
+    char* query = e->headers.path + e->headers.question_pos;
+    char query_copy[strlen(query) + 1];
+    memcpy(query_copy, query, strlen(query) + 1);
+
+    char* token = strtok(query_copy, "&");
+    while (token != NULL) {
+        if (strstr(token, param) == token) {
+            const char* value_start = strchr(token, '=');
+            if (value_start != NULL) {
+                strncpy(value, value_start + 1, value_size);
+                value[value_size - 1] = '\0';
+                return;
+            }
+        }
+        token = strtok(NULL, "&");
+    }
+
+    value[0] = '\0';
+}
+
 void *handle_client(void *arg) {
     http_thread* thread_data = (http_thread*)arg;
     http_event event = {0};
@@ -182,7 +204,7 @@ void *handle_client(void *arg) {
         temp_len = recv(thread_data->client_socket, temp_req, 4095, 0);
         if (temp_len == 0) {
             if (event.headers.raw_header) free(event.headers.raw_header);
-            #ifdef __WIN32
+            #ifdef _WIN32
             closesocket(thread_data->client_socket);
             #else
             close(thread_data->client_socket);
@@ -204,9 +226,11 @@ void *handle_client(void *arg) {
         strncpy(event.headers.path, event.headers.raw_header + method_len, path_len);
         event.headers.method[method_len] = '\0';
         event.headers.path[path_len] = '\0';
+        event.headers.question_pos = find_char_num(event.headers.path, '?') + 1;
+        if (event.headers.question_pos) event.headers.path[event.headers.question_pos - 1] = '\0';
     } else {
         if (event.headers.raw_header) free(event.headers.raw_header);
-        #ifdef __WIN32
+        #ifdef _WIN32
         closesocket(thread_data->client_socket);
         #else
         close(thread_data->client_socket);
@@ -225,7 +249,7 @@ void *handle_client(void *arg) {
 
     if (event.headers.raw_header) free(event.headers.raw_header);
 
-    #ifdef __WIN32
+    #ifdef _WIN32
     closesocket(thread_data->client_socket);
     #else
     close(thread_data->client_socket);
@@ -237,7 +261,7 @@ void *handle_client(void *arg) {
 }
 
 int http_init(short port) {
-    #ifdef __WIN32
+    #ifdef _WIN32
     WSADATA dat;
     if (WSAStartup(MAKEWORD(2, 2), &dat) != 0) {
         perror("WSAStartup failed");
@@ -254,7 +278,7 @@ int http_init(short port) {
         return -1;
     }
 
-    #ifdef __WIN32
+    #ifdef _WIN32
     u_long mode = 1;
     if (ioctlsocket(server_socket, FIONBIO, &mode) != 0) {
         perror("ioctlsocket failed");
@@ -303,15 +327,14 @@ void http_start(int server_socket, http_callback callback) {
 
         if (FD_ISSET(server_socket, &read_fds)) {
             int client_socket = accept(server_socket, NULL, NULL);
-
-            #ifndef _WIN32
-            fcntl(client_socket, F_SETFL, fcntl(client_socket, F_GETFL, 0) | O_NONBLOCK); // non blocking untuk client
-            #endif
-
             if (client_socket > 0) {
                 FD_SET(client_socket, &master_fds);
                 if (client_socket > max_fd) max_fd = client_socket;
             }
+
+            #ifndef _WIN32
+            fcntl(client_socket, F_SETFL, fcntl(client_socket, F_GETFL, 0) | O_NONBLOCK); // non blocking untuk client
+            #endif
         }
 
         for (int fd = 0; fd <= max_fd; fd++) {
@@ -338,7 +361,7 @@ void http_start(int server_socket, http_callback callback) {
 
     close(server_socket);
 
-    #ifdef __WIN32
+    #ifdef _WIN32
     WSACleanup();
     #endif
 }
