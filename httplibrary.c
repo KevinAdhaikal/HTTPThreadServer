@@ -261,8 +261,7 @@ int http_init(short port) {
         return -1;
     }
     #else
-    int client_flags = fcntl(server_socket, F_GETFL, 0);
-    if (fcntl(server_socket, F_SETFL, client_flags | O_NONBLOCK) == -1) {
+    if (fcntl(server_socket, F_SETFL, fcntl(server_socket, F_GETFL, 0) | O_NONBLOCK) == -1) {
         perror("fcntl failed");
         return -1;
     }
@@ -304,6 +303,11 @@ void http_start(int server_socket, http_callback callback) {
 
         if (FD_ISSET(server_socket, &read_fds)) {
             int client_socket = accept(server_socket, NULL, NULL);
+
+            #ifndef _WIN32
+            fcntl(client_socket, F_SETFL, fcntl(client_socket, F_GETFL, 0) | O_NONBLOCK); // non blocking untuk client
+            #endif
+
             if (client_socket > 0) {
                 FD_SET(client_socket, &master_fds);
                 if (client_socket > max_fd) max_fd = client_socket;
