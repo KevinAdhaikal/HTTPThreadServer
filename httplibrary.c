@@ -317,7 +317,6 @@ void http_start(int server_socket, http_callback callback) {
                 pthread_t thread;
                 http_thread* thread_arg = malloc(sizeof(http_thread));
                 thread_arg->client_socket = fd;
-                thread_arg->master_fds = &master_fds;
                 thread_arg->callback = callback;
                 pthread_create(&thread, NULL, handle_client, thread_arg);
                 pthread_detach(thread);

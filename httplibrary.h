@@ -29,7 +29,6 @@ typedef void (*http_callback)(http_event*);
 typedef struct {
     http_callback callback;
     int client_socket;
-    struct fd_set* master_fds;
 } http_thread;
 
 int http_init(short port);
