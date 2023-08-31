@@ -6,10 +6,12 @@
 
 typedef struct {
     char method[16];
-    char path[512];
+    char path[128];
+    char query[512];
     short question_pos;
     char* raw_header;
     int raw_len;
+    int body_pos;
 } http_header;
 
 typedef struct {
@@ -45,5 +47,6 @@ void http_get_header(http_event* e, const char* header_name, char* dest, size_t 
 void http_get_cookie(http_event* e, const char *cookie_name, char *dest, size_t dest_len);
 int http_send_file(http_event* e, const char* filename);
 void http_get_query(http_event* e, const char* param, char* value, size_t value_size);
+int http_get_query_to_int(http_event* e, const char* param);
 
 #endif // HTTPLIBRARY_H
