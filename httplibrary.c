@@ -19,6 +19,12 @@
 
 typedef void (*http_callback)(http_event*);
 
+int find_crlfcrlf_num(const char* str) {
+    const char* result = strstr(str, "\r\n\r\n");
+    if (result != NULL) return result - str;
+    return -1;
+}
+
 int find_char_num(const char* str, char ch_find) {
     if (!str) return -1;
     for (int a = 0; a < strlen(str); a++) {
@@ -62,7 +68,7 @@ void http_buffer_append(http_event* e, const char *data, int len) {
         http_buffer_resize(b, new_capacity);
     }
 
-    memcpy(b->data + b->len, data, len);
+    memcpy(b->data + b->len, data, len + 1);
     b->len += len;
 }
 
@@ -103,7 +109,7 @@ int http_send_file(http_event* e, const char* filename) {
     else {
         char toString[32];
         fseek(fp, 0, SEEK_END);
-        if (e->state == 0) http_buffer_init(e, 502);
+        if (e->state == 0) http_buffer_init(e, 1024);
         if (e->state == 1) http_send_status(e, 200, "OK");
         sprintf(toString, "%u", (unsigned)ftell(fp));
 
@@ -113,9 +119,9 @@ int http_send_file(http_event* e, const char* filename) {
 
         char tempBuffer[1024];
         size_t bufferSize;
-        while(bufferSize = fread(tempBuffer, 1, 1024, fp)) {
-            send(e->client_sock, tempBuffer, bufferSize, 0);
-        }
+        while(bufferSize = fread(tempBuffer, 1, 1024, fp)) http_buffer_append(e, tempBuffer, bufferSize);
+
+        send(e->client_sock, e->server_buffer.data, e->server_buffer.len, 0);
         http_buffer_free(&e->server_buffer);
         fclose(fp);
     }
@@ -194,6 +200,12 @@ void http_get_query(http_event* e, const char* param, char* value, size_t value_
     value[0] = '\0';
 }
 
+int http_get_query_to_int(http_event* e, const char* param) {
+    char temp_query[5];
+    http_get_query(e, param, temp_query, 4);
+    return atoi(temp_query);
+}
+
 void *handle_client(void *arg) {
     http_thread* thread_data = (http_thread*)arg;
     http_event event = {0};
@@ -214,20 +226,20 @@ void *handle_client(void *arg) {
         } else if (temp_len == -1) break;
 
         event.headers.raw_header = realloc(event.headers.raw_header, event.headers.raw_len + temp_len + 1);
-        memcpy(event.headers.raw_header + event.headers.raw_len, temp_req, temp_len);
+        memcpy(event.headers.raw_header + event.headers.raw_len, temp_req, temp_len + 1);
         event.headers.raw_len += temp_len;
-        event.headers.raw_header[event.headers.raw_len] = '\0';
     }
 
     if (event.headers.raw_len > 0) {
-        int method_len = find_char_num(event.headers.raw_header, ' ') + 1;
-        int path_len = find_char_num(event.headers.raw_header + method_len, ' ');
-        strncpy(event.headers.method, event.headers.raw_header, method_len);
-        strncpy(event.headers.path, event.headers.raw_header + method_len, path_len);
+        int method_len = find_char_num(event.headers.raw_header, ' ');
+        int path_len = find_char_num(event.headers.raw_header + method_len + 1, ' ');
+        memcpy(event.headers.method, event.headers.raw_header, method_len);
+        memcpy(event.headers.path, event.headers.raw_header + method_len + 1, path_len);
         event.headers.method[method_len] = '\0';
         event.headers.path[path_len] = '\0';
         event.headers.question_pos = find_char_num(event.headers.path, '?') + 1;
         if (event.headers.question_pos) event.headers.path[event.headers.question_pos - 1] = '\0';
+        event.headers.body_pos = find_crlfcrlf_num(event.headers.raw_header);
     } else {
         if (event.headers.raw_header) free(event.headers.raw_header);
         #ifdef _WIN32
