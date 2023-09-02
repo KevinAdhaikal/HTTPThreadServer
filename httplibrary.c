@@ -64,6 +64,7 @@ void send_socket(int socketfd, char* data, int len) {
         pos += bytes_sent;
         len -= bytes_sent;
     }
+    FD_CLR(socketfd, &writefds);
 }
 
 void http_buffer_init(http_event* e, int initial_capacity) {
@@ -306,8 +307,10 @@ void *handle_client(void *arg) {
     close(thread_data->client_socket);
     #endif
 
+    FD_CLR(thread_data->client_socket, &thread_data->read_fds);
     free(thread_data);
 
+    
     return NULL;
 }
 
@@ -398,6 +401,7 @@ void http_start(int server_socket, http_callback callback) {
                 pthread_t thread;
                 http_thread* thread_arg = malloc(sizeof(http_thread));
                 thread_arg->client_socket = fd;
+                thread_arg->read_fds = read_fds;
                 thread_arg->callback = callback;
                 pthread_create(&thread, NULL, handle_client, thread_arg);
                 pthread_detach(thread);
