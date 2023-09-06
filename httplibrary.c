@@ -271,9 +271,8 @@ void *handle_client(void *arg) {
         event.headers.raw_len += temp_len;
     }
 
-    event.headers.raw_header[event.headers.raw_len] = '\0';
-    
     if (event.headers.raw_len > 0) {
+        event.headers.raw_header[event.headers.raw_len] = '\0';
         int method_len = find_char_num(event.headers.raw_header, ' ');
         int path_len = find_char_num(event.headers.raw_header + method_len + 1, ' ');
         memcpy(event.headers.method, event.headers.raw_header, method_len);
