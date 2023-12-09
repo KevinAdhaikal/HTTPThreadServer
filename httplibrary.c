@@ -101,7 +101,11 @@ handle_client(void *arg) {
     http_thread->handler(event);
     
     DISCONNECT:
+    #ifdef _WIN32
     shutdown(http_thread->client_socket, SD_BOTH);
+    #else
+    shutdown(http_thread->client_socket, SHUT_RDWR);
+    #endif
     close_socket(http_thread->client_socket);
     free(arg);
 
