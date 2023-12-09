@@ -1,15 +1,12 @@
-// Example for HTTP Thread Server
 #include <stdio.h>
-#include <string.h>
 
-#include "httplibrary.h"
+#include "http1.h"
 
-void callback(http_event* e) {
-    printf("%s: %s\n", e->headers.method, e->headers.path);
-    http_write(e, "Hello World", 0);
+void client_process(http_event* e) {
+    http_write(e, "hello world", 11);
 }
 
 int main() {
-    http_start(http_init(8080), callback);
+    http_start(http_init(80), client_process);
     return 0;
 }
