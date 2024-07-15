@@ -38,6 +38,10 @@
 			<Option compilerVar="CC" />
 		</Unit>
 		<Unit filename="httplibrary.h" />
+		<Unit filename="string_lib.c">
+			<Option compilerVar="CC" />
+		</Unit>
+		<Unit filename="string_lib.h" />
 		<Extensions />
 	</Project>
 </CodeBlocks_project_file>
