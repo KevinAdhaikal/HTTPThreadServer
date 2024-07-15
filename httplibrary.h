@@ -1,60 +1,56 @@
-#ifndef HTTPLIBRARY_H
-#define HTTPLIBRARY_H
+#ifndef HTTP_HEADER_INCLUDED
+#define HTTP_HEADER_INCLUDED
 
 #include <stdio.h>
-#include <string.h>
+#include <stdlib.h>
 
 #ifdef _WIN32
 #include <winsock2.h>
-#include <windows.h>
+#include <Windows.h>
+#include <ws2tcpip.h>
 #else
+#include <unistd.h>
+#include <pthread.h>
+#include <semaphore.h>
+#include <arpa/inet.h>
+#include <sys/socket.h>
+#include <sys/types.h>
 #include <sys/select.h>
+#include <netinet/in.h>
+#include <netdb.h>
+#include <fcntl.h>
+#include <ctype.h>
+#define SOCKET int
+#define SD_SEND SHUT_WR
 #endif
 
-typedef struct {
-    char method[16];
-    char path[128];
-    char query[512];
-    short question_pos;
-    char* raw_header;
-    int raw_len;
-    int body_pos;
-} http_header;
+#include "string_lib.h"
 
 typedef struct {
-    char *data;
-    int len;
-    int capacity;
-} http_buffer;
+    char* val;
+    size_t len;
+} http_string;
 
 typedef struct {
-    char state;
-    int client_sock;
-    http_header headers;
-    http_buffer server_buffer;
-} http_event;
+    SOCKET socket;
+    http_string method;
+    http_string path;
+    char* query_pointer;
+    size_t query_list_length;
+    http_string version;
+    char* headers_pointer;
+    size_t headers_length;
+    char* cookie_pointer;
+    http_string body;
+} http_client;
 
-typedef void (*http_callback)(http_event*);
+typedef void (*http_callback)(http_client*);
 
-typedef struct {
-    http_callback callback;
-    int client_socket;
-    fd_set read_fds;
-} http_thread;
+char* http_get_query(http_client* client, const char* key); // HTTP Get Query
+char* http_get_header(http_client* client, const char* key); // HTTP Get Header
+char* http_get_cookie(http_client* client, const char* key); // HTTP Get Cookie
 
-int http_init(short port);
-void http_start(int server_fd, http_callback callback);
-void http_buffer_init(http_event* e, int initial_capacity);
-void http_buffer_resize(http_buffer* b, int new_capacity);
-void http_buffer_append(http_event* e, const char *data, int len);
-void http_buffer_free(http_buffer* b);
-void http_send_status(http_event* e, int status, const char *val);
-void http_send_header(http_event* e, const char *name, const char *val);
-void http_write(http_event* e, const char *data, int len);
-void http_get_header(http_event* e, const char* header_name, char* dest, size_t dest_len);
-void http_get_cookie(http_event* e, const char *cookie_name, char *dest, size_t dest_len);
-int http_send_file(http_event* e, const char* filename);
-void http_get_query(http_event* e, const char* param, char* value, size_t value_size);
-int http_get_query_to_int(http_event* e, const char* param);
+SOCKET http_init_socket(const char* ip, unsigned short port); // initilaize socket
+void http_start(SOCKET s_socket, http_callback callback); // Start HTTP
 
-#endif // HTTPLIBRARY_H
+#endif // HTTP_HEADER_INCLUDED

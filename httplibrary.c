@@ -1,429 +1,344 @@
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <unistd.h>
-#include <pthread.h>
-#include <errno.h>
-
-#ifdef _WIN32
-#include <winsock2.h>
-#include <windows.h>
-#else
-#include <arpa/inet.h>
-#include <sys/socket.h>
-#include <sys/types.h>
-#include <sys/select.h>
-#include <netinet/in.h>
-#include <fcntl.h>
-#endif
-
+#include "string_lib.h"
 #include "httplibrary.h"
 
-#define LIMIT_SEND 8096
+#define TEMP_BUFFER_LEN 512
+#define MAX_THREAD 10
 
-typedef void (*http_callback)(http_event*);
+typedef struct {
+    http_client* client;
+    http_callback callback;
+    string req_raw_data;
+    char* selected_thread_room;
+    HANDLE thread_handle;
+} http_thread;
 
-int find_crlfcrlf_num(const char* str) {
-    const char* result = strstr(str, "\r\n\r\n");
-    if (result != NULL) return result - str;
-    return -1;
-}
+#ifdef _WIN32
+HANDLE ghSemaphore;
+#else
+sem_t ghSemaphore;
+#endif
 
-int find_char_num(const char* str, char ch_find) {
-    if (!str) return -1;
-    for (int a = 0; a < strlen(str); a++) {
-        if (str[a] == ch_find) return a;
-    }
-    return -1;
-}
-
-void send_socket(int socketfd, char* data, int len) {
-    int pos = 0;
-    fd_set writefds;
-    struct timeval timeout;
-
-    while (len > 0) {
-        FD_ZERO(&writefds);
-        FD_SET(socketfd, &writefds);
-
-        timeout.tv_sec = 5;
-        timeout.tv_usec = 0;
-
-        int select_result = select(socketfd + 1, NULL, &writefds, NULL, &timeout);
-
-        if (select_result < 1) break;
-
-        int bytes_to_send = (len > LIMIT_SEND) ? LIMIT_SEND : len;
-        int bytes_sent = send(socketfd, data + pos, bytes_to_send, 0);
-
-        if (bytes_sent == -1) {
-            if (errno == EAGAIN || errno == EWOULDBLOCK) continue;
-            break;
-        }
-
-        pos += bytes_sent;
-        len -= bytes_sent;
-    }
-    FD_CLR(socketfd, &writefds);
-}
-
-void http_buffer_init(http_event* e, int initial_capacity) {
-    http_buffer* b = &e->server_buffer;
-    b->data = (char *)malloc(initial_capacity);
-    if (!b->data) {
-        perror("Memory allocation error");
-        return;
-    }
-    b->len = 0;
-    b->capacity = initial_capacity;
-    e->state++;
-}
-
-void http_buffer_resize(http_buffer* b, int new_capacity) {
-    char *new_data = (char *)realloc(b->data, new_capacity);
-    if (!new_data) {
-        perror("Memory allocation error");
-        return;
-    }
-
-    b->data = new_data;
-    b->capacity = new_capacity;
-}
-
-void http_buffer_append(http_event* e, const char *data, int len) {
-    if (!data) return;
-    if (e->state == 0) http_buffer_init(e, 1024);
-    http_buffer* b = &e->server_buffer;
-
-    if (b->len + len > b->capacity) {
-        int new_capacity = b->capacity == 0 ? len : b->capacity * 2;
-        while (b->len + len > new_capacity) {
-            new_capacity *= 2;
-        }
-        http_buffer_resize(b, new_capacity);
-    }
-
-    memcpy(b->data + b->len, data, len + 1);
-    b->len += len;
-}
-
-void http_buffer_free(http_buffer* b) {
-    free(b->data);
-    b->data = NULL;
-    b->len = 0;
-    b->capacity = 0;
-}
-
-void http_send_status(http_event* e, int status, const char *val) {
-    if (e->state == 0) http_buffer_init(e, 1024);
-    char response[128];
-    int response_length = snprintf(response, sizeof(response), "HTTP/1.1 %d %s\r\n", status, val);
-    http_buffer_append(e, response, response_length);
-    e->state++;
-}
-
-void http_send_header(http_event* e, const char *name, const char *val) {
-    if (e->state == 0) http_buffer_init(e, 1024);
-    if (e->state == 1) http_send_status(e, 200, "OK");
-    char header[256];
-    int header_length = snprintf(header, sizeof(header), "%s: %s\r\n", name, val);
-    http_buffer_append(e, header, header_length);
-    if (e->state < 1) e->state++;
-}
-
-void http_write(http_event* e, const char *data, int len) {
-    if (!data || !len) return;
-    if (e->state == 0) http_buffer_init(e, 1024);
-    if (e->state == 1) http_send_status(e, 200, "OK");
-    if (e->state == 2) http_buffer_append(e, "\r\n", 2), e->state++;
-    http_buffer_append(e, data, !len ? strlen(data) : len);
-}
-
-int http_send_file(http_event* e, const char* filename) {
-    FILE* fp = fopen(filename, "rb");
-    if (!fp) return -1;
-    else {
-        char toString[32];
-        fseek(fp, 0, SEEK_END);
-        if (e->state == 0) http_buffer_init(e, 1024);
-        if (e->state == 1) http_send_status(e, 200, "OK");
-        sprintf(toString, "%u", (unsigned)ftell(fp));
-
-        http_send_header(e, "Content-Length", toString);
-        http_buffer_append(e, "\r\n", 2);
-        fseek(fp, 0, SEEK_SET);
-
-        char tempBuffer[1024];
-        size_t bufferSize;
-        
-        sizeloop:
-        bufferSize = fread(tempBuffer, 1, 1024, fp);
-        http_buffer_append(e, tempBuffer, bufferSize);
-        if (bufferSize) goto sizeloop;
-
-        send_socket(e->client_sock, e->server_buffer.data, e->server_buffer.len);
-        http_buffer_free(&e->server_buffer);
-        fclose(fp);
-    }
-
-    return 1;
-}
-
-void http_get_header(http_event* e, const char* header_name, char* dest, size_t dest_len) {
-    dest[0] = '\0';
-    const char* header_start = strstr(e->headers.raw_header, header_name);
-
-    if (header_start) {
-        header_start += strlen(header_name);
-        header_start = strchr(header_start, ':');
-        if (header_start) {
-            header_start++;
-            while (*header_start == ' ') header_start++;
-            const char* header_end = strchr(header_start, '\r');
-            if (header_end) {
-                size_t value_len = header_end - header_start;
-                if (value_len < dest_len) {
-                    strncpy(dest, header_start, value_len);
-                    dest[value_len] = '\0';
-                }
-            }
-        }
-    }
-}
-
-void http_get_cookie(http_event* e, const char *cookie_name, char *dest, size_t dest_len) {
-    const char *cookie_start = strstr(e->headers.raw_header, cookie_name);
-
-    if (cookie_start) {
-        cookie_start += strlen(cookie_name);
-
-        if (cookie_start[0] == '=') {
-            cookie_start++;
-
-            const char *cookie_value_end = strchr(cookie_start, ';');
-
-            if (!cookie_value_end) cookie_value_end = strchr(cookie_start, '\r');
-
-            if (cookie_value_end) {
-                size_t cookie_value_len = cookie_value_end - cookie_start;
-
-                if (cookie_value_len < dest_len) {
-                    strncpy(dest, cookie_start, cookie_value_len);
-                    dest[cookie_value_len] = '\0';
-                    return;
-                }
-            }
-        }
-    }
-
-    dest[0] = '\0';
-}
-
-void http_get_query(http_event* e, const char* param, char* value, size_t value_size) {
-    if (!e->headers.question_pos) return;
-    char* query = e->headers.path + e->headers.question_pos;
-    char query_copy[strlen(query) + 1];
-    memcpy(query_copy, query, strlen(query) + 1);
-
-    char* token = strtok(query_copy, "&");
-    while (token != NULL) {
-        if (strstr(token, param) == token) {
-            const char* value_start = strchr(token, '=');
-            if (value_start != NULL) {
-                strncpy(value, value_start + 1, value_size);
-                value[value_size - 1] = '\0';
-                return;
-            }
-        }
-        token = strtok(NULL, "&");
-    }
-
-    value[0] = '\0';
-}
-
-int http_get_query_to_int(http_event* e, const char* param) {
-    char temp_query[5];
-    http_get_query(e, param, temp_query, 4);
-    return atoi(temp_query);
-}
-
-void *handle_client(void *arg) {
-    http_thread* thread_data = (http_thread*)arg;
-    http_event event = {0};
-    char temp_req[4096];
-    int temp_len = 0;
-
-    while(1) {
-        temp_len = recv(thread_data->client_socket, temp_req, 4095, 0);
-        if (temp_len == 0) {
-            if (event.headers.raw_header) free(event.headers.raw_header);
-            #ifdef _WIN32
-            closesocket(thread_data->client_socket);
-            #else
-            close(thread_data->client_socket);
-            #endif
-            free(thread_data);
-            return NULL;
-        } else if (temp_len == -1) break;
-
-        event.headers.raw_header = realloc(event.headers.raw_header, event.headers.raw_len + temp_len + 1);
-        memcpy(event.headers.raw_header + event.headers.raw_len, temp_req, temp_len);
-        event.headers.raw_len += temp_len;
-    }
-
-    if (event.headers.raw_len > 0) {
-        event.headers.raw_header[event.headers.raw_len] = '\0';
-        int method_len = find_char_num(event.headers.raw_header, ' ');
-        int path_len = find_char_num(event.headers.raw_header + method_len + 1, ' ');
-        memcpy(event.headers.method, event.headers.raw_header, method_len);
-        memcpy(event.headers.path, event.headers.raw_header + method_len + 1, path_len);
-        event.headers.method[method_len] = '\0';
-        event.headers.path[path_len] = '\0';
-        event.headers.question_pos = find_char_num(event.headers.path, '?') + 1;
-        if (event.headers.question_pos) event.headers.path[event.headers.question_pos - 1] = '\0';
-        event.headers.body_pos = find_crlfcrlf_num(event.headers.raw_header) + 4;
-    } else {
-        if (event.headers.raw_header) free(event.headers.raw_header);
-        #ifdef _WIN32
-        closesocket(thread_data->client_socket);
-        #else
-        close(thread_data->client_socket);
-        #endif
-        free(thread_data);
-        return NULL;
-    }
-
-    event.client_sock = thread_data->client_socket;
-    thread_data->callback(&event);
-
-    if (event.server_buffer.len) {
-        send_socket(event.client_sock, event.server_buffer.data, event.server_buffer.len);
-        http_buffer_free(&event.server_buffer);
-    }
-
-    if (event.headers.raw_header) free(event.headers.raw_header);
-
+SOCKET http_init_socket(const char* ip, unsigned short port) {
+    // initialize windows socket
     #ifdef _WIN32
-    closesocket(thread_data->client_socket);
-    #else
-    close(thread_data->client_socket);
-    #endif
-
-    FD_CLR(thread_data->client_socket, &thread_data->read_fds);
-    free(thread_data);
-
-    
-    return NULL;
-}
-
-int http_init(short port) {
-    #ifdef _WIN32
-    WSADATA dat;
-    if (WSAStartup(MAKEWORD(2, 2), &dat) != 0) {
-        perror("WSAStartup failed");
-        return -1;
+    WSADATA wsaData;
+    if (WSAStartup(MAKEWORD(2,2), &wsaData) != 0) {
+        printf("WSAStartup failed with error\n");
+        return 0;
     }
     #endif
 
-    int server_socket;
     struct sockaddr_in server_addr;
-
-    server_socket = socket(AF_INET, SOCK_STREAM, 0);
-    if (server_socket == -1) {
-        perror("Socket creation failed");
-        return -1;
-    }
-
-    #ifdef _WIN32
-    u_long mode = 1;
-    if (ioctlsocket(server_socket, FIONBIO, &mode) != 0) {
-        perror("ioctlsocket failed");
-        return -1;
-    }
-    #else
-    if (fcntl(server_socket, F_SETFL, fcntl(server_socket, F_GETFL, 0) | O_NONBLOCK) == -1) {
-        perror("fcntl failed");
-        return -1;
-    }
-    #endif
-
-    int value = 1;
-    setsockopt(server_socket, SOL_SOCKET, SO_REUSEADDR, &value, 4);
-
-    memset(&server_addr, 0, sizeof(server_addr));
+    memset(&server_addr, 0, sizeof(struct sockaddr_in));
     server_addr.sin_family = AF_INET;
     server_addr.sin_addr.s_addr = INADDR_ANY;
     server_addr.sin_port = htons(port);
 
-    if (bind(server_socket, (struct sockaddr *)&server_addr, sizeof(server_addr)) == -1) {
-        perror("Socket binding failed");
+    SOCKET r_socket = socket(AF_INET, SOCK_STREAM, 0);
+    if (r_socket == -1) {
+        printf("Socket creation failed");
         return -1;
     }
 
-    if (listen(server_socket, 10) == -1) {
-        perror("Listening failed");
+    // Setup the TCP listening socket
+    if (bind(r_socket, (struct sockaddr*)&server_addr, sizeof(struct sockaddr_in)) == -1) {
+        printf("bind error!\n");
+        http_close_socket(r_socket);
         return -1;
     }
 
-    return server_socket;
-}
-
-void http_start(int server_socket, http_callback callback) {
-    fd_set read_fds, master_fds;
-    int max_fd;
-
-    FD_ZERO(&master_fds);
-    FD_SET(server_socket, &master_fds);
-    max_fd = server_socket;
-
-    while (1) {
-        read_fds = master_fds;
-
-        if (select(max_fd + 1, &read_fds, NULL, NULL, NULL) == -1) {
-            perror("select");
-            break;
-        }
-
-        if (FD_ISSET(server_socket, &read_fds)) {
-            int client_socket = accept(server_socket, NULL, NULL);
-            if (client_socket > 0) {
-                FD_SET(client_socket, &master_fds);
-                if (client_socket > max_fd) max_fd = client_socket;
-            }
-
-            #ifndef _WIN32
-            if (fcntl(client_socket, F_SETFL, fcntl(server_socket, F_GETFL, 0) | O_NONBLOCK) == -1) {
-                perror("fcntl failed");
-                return;
-            }
-            #endif
-
-        }
-
-        for (int fd = 0; fd <= max_fd; fd++) {
-            if (FD_ISSET(fd, &read_fds)) {
-                if (fd == server_socket) continue;
-                pthread_t thread;
-                http_thread* thread_arg = malloc(sizeof(http_thread));
-                thread_arg->client_socket = fd;
-                thread_arg->read_fds = read_fds;
-                thread_arg->callback = callback;
-                pthread_create(&thread, NULL, handle_client, thread_arg);
-                pthread_detach(thread);
-                FD_CLR(fd, &master_fds);
-            }
-        }
+    // listen socket
+    if (listen(r_socket, SOMAXCONN) == -1) {
+        printf("listen error!\n");
+        http_close_socket(r_socket);
+        return -1;
     }
-
-    for (int fd = 0; fd <= max_fd; fd++) {
-        if (FD_ISSET(fd, &master_fds)) {
-            close(fd);
-        }
-    }
-
-    close(server_socket);
 
     #ifdef _WIN32
-    WSACleanup();
+    if (ioctlsocket(r_socket, FIONBIO, &(u_long){1}) != NO_ERROR) {
+        printf("ioctlsocket error!\n");
+        http_close_socket(r_socket);
+        return -1;
+    }
+    #else
+    if (fcntl(r_socket, F_SETFL, fcntl(r_socket, F_GETFL, 0) | O_NONBLOCK) == -1) {
+        printf("fcntl failed\n");
+        http_close_socket(r_socket);
+        return -1;
+    }
+    #endif
+
+    setsockopt(r_socket, SOL_SOCKET, SO_REUSEADDR, (const char[4]){1, 0, 0, 0}, 4);
+    return r_socket;
+}
+
+char* http_get_query(http_client* client, const char* key) {
+    size_t key_len = strlen(key), cur_len = 0, cur_list_length;
+    char* query_pointer = client->query_pointer;
+
+    while(1) {
+        while(1) {
+            if (tolower(*query_pointer) != tolower(key[cur_len])) {
+                cur_len = 0;
+                break;
+            } else query_pointer++, cur_len++;
+            if (cur_len == key_len) return query_pointer + 1;
+        }
+
+        if (client->query_list_length == cur_list_length) return NULL;
+        for (; *query_pointer != '\0'; query_pointer++);
+        query_pointer++, cur_list_length++;
+    }
+}
+
+char* http_get_header(http_client* client, const char* key) {
+    size_t key_len = strlen(key), cur_len = 0;
+    char* headers_pointer = client->headers_pointer;
+
+    while(1) {
+        while(1) {
+            if (tolower(*headers_pointer) != tolower(key[cur_len])) {
+                cur_len = 0;
+                break;
+            } else headers_pointer++, cur_len++;
+            if (cur_len == key_len) return headers_pointer + 2;
+        }
+
+        for (; *headers_pointer != '\1'; headers_pointer++);
+        if (*(headers_pointer + 1) == '\0' && *(headers_pointer + 2) == '\0') return NULL;
+        headers_pointer++;
+    }
+}
+
+char* http_get_cookie(http_client* client, const char* key) {
+    char* cookie_pointer = client->cookie_pointer;
+    if (cookie_pointer == NULL) { // kita parsing dulu, jika cookie_pointer nya kosong
+        client->cookie_pointer = http_get_header(client, "cookie");
+        cookie_pointer = client->cookie_pointer;
+        if (cookie_pointer == NULL) return NULL;
+
+        while(*cookie_pointer != '\0' && *cookie_pointer != '\1') {
+            if (*cookie_pointer == ';') {
+                *cookie_pointer++ = '\0';
+                if (*cookie_pointer == ' ') *cookie_pointer++ = '\2';
+            } else cookie_pointer++;
+        }
+        cookie_pointer = client->cookie_pointer;
+    }
+
+    size_t cur_len = 0, key_len = strlen(key);
+    while(1) {
+        while(1) {
+            if (tolower(*cookie_pointer) != tolower(key[cur_len])) {
+                cur_len = 0;
+                break;
+            } else cookie_pointer++, cur_len++;
+            if (cur_len == key_len) return cookie_pointer + 1;
+        }
+
+        for (; *cookie_pointer != '\0'; cookie_pointer++);
+        if (*++cookie_pointer == '\2') cookie_pointer++;
+        if (*cookie_pointer == '\0' || *cookie_pointer == '\1') return NULL;
+    }
+}
+
+#ifdef _WIN32
+static DWORD
+#else
+static void*
+#endif
+http_handle_client(void* arg) {
+    http_thread* thread = arg;
+    http_client* client = thread->client;
+
+    char recvbuf[TEMP_BUFFER_LEN];
+    unsigned int recv_res = 0;
+
+    struct timeval tv;
+    fd_set recvfds;
+    FD_ZERO(&recvfds);
+    FD_SET(client->socket, &recvfds);
+
+    while(1) {
+        tv.tv_sec = 1;
+        tv.tv_usec = 0;
+        
+        if (!select(client->socket + 1, &recvfds, NULL, NULL, &tv)) goto THREAD_EXIT;
+        else if (FD_ISSET(client->socket, &recvfds)) {
+            while (1) {
+                recv_res = recv(client->socket, recvbuf, TEMP_BUFFER_LEN, 0);
+                if (!recv_res) goto THREAD_EXIT;
+                else if (recv_res == -1) break;
+                else if (recv_res > 0) string_add_n(&thread->req_raw_data, recvbuf, recv_res);
+            }
+            break;
+        }
+    }
+
+    // HTTP request parser
+    char* cur_pos = thread->req_raw_data.val;
+
+    // HTTP Method
+    client->method.val = cur_pos;
+    for (; *cur_pos != ' '; cur_pos++) client->method.len++;
+    *cur_pos++ = '\0';
+
+    // HTTP Path
+    client->path.val = cur_pos;
+    for (; *cur_pos != ' '; cur_pos++, client->path.len++) {
+        // query parsing
+        if (*cur_pos == '&' && client->query_pointer != NULL) *cur_pos = '\0', client->query_list_length++;
+        else if (*cur_pos == '?') *cur_pos++ = '\0', client->query_pointer = cur_pos;
+    }
+    *cur_pos++ = '\0';
+
+    // HTTP Version
+    client->version.val = cur_pos;
+    for (; *cur_pos != '\n'; cur_pos++) client->version.len++;
+    *cur_pos++ = '\0';
+
+    // HTTP Headers
+    client->headers_pointer = cur_pos;
+    char* s_header_pos = cur_pos; // start header pos
+
+    while(1) {
+        if (*cur_pos == '\n') {
+            if (*(cur_pos - 1) == '\r') *(cur_pos - 1) = 0, *cur_pos++ = 1;
+            else *cur_pos++ = 1;
+
+            if (*cur_pos == '\r' && *(cur_pos + 1) == '\n') {
+                *cur_pos++ = 0, *cur_pos++ = 0;
+                break;
+            }
+            if (*cur_pos == '\n') {
+                *cur_pos++ = 0;
+                break;
+            }
+        }
+        cur_pos++;
+    }
+    client->headers_length = cur_pos - s_header_pos;
+    
+    // HTTP Body
+    client->body.val = cur_pos;
+    client->body.len = thread->req_raw_data.len - (cur_pos - thread->req_raw_data.val);
+    
+    thread->callback(client);
+
+    shutdown(client->socket, SD_SEND);
+
+    THREAD_EXIT:
+    http_close_socket(client->socket);
+    string_finalize(&thread->req_raw_data);
+    free(client);
+    
+    #ifdef _WIN32
+    ReleaseSemaphore(ghSemaphore, 1, NULL);
+    #else
+    sem_post(&ghSemaphore);
+    #endif
+
+    thread->client = NULL;
+    thread->callback = NULL;
+    *thread->selected_thread_room = 0;
+
+    #ifdef _WIN32
+    CloseHandle(thread->thread_handle);
+    #endif
+    return 0;
+}
+
+void http_start(SOCKET s_socket, http_callback callback) {
+    #ifdef _WIN32
+    ghSemaphore = CreateSemaphore(
+        NULL,        // default security attributes
+        MAX_THREAD,  // initial count
+        MAX_THREAD,  // maximum count
+        NULL         // unnamed semaphore
+    );
+    #else
+    sem_init(&ghSemaphore, 0, MAX_THREAD);
+    #endif
+
+    SOCKET c_socket;
+    
+    http_thread* thread[MAX_THREAD];
+    http_client* client[MAX_THREAD];
+    char* thread_room = malloc(MAX_THREAD);
+    memset(thread_room, 0, MAX_THREAD);
+
+    for (int a = 0; a < MAX_THREAD; a++) {
+        thread[a] = malloc(sizeof(http_thread));
+        memset(thread[a], 0, sizeof(http_thread));
+    }
+    
+    unsigned int current_thread_id = 0;
+
+    fd_set readfds;
+    struct timeval tv;
+
+    while(1) {
+        FD_ZERO(&readfds);
+
+        // Accept a client socket
+        while (1) {
+            tv.tv_sec = 1;
+            tv.tv_usec = 0;
+
+            FD_SET(s_socket, &readfds);
+            int sel_val = select(s_socket + 1, &readfds, NULL, NULL, &tv);
+            if (sel_val != 0 && FD_ISSET(s_socket, &readfds)) {
+                c_socket = accept(s_socket, NULL, NULL);
+                break;
+            }
+        }
+
+        // Set the client socket to non-blocking mode
+        #ifdef _WIN32
+        ioctlsocket(c_socket, FIONBIO, &(u_long){1});
+        #else
+        fcntl(c_socket, F_SETFL, fcntl(c_socket, F_GETFL, 0) | O_NONBLOCK);
+        #endif
+
+        #ifdef _WIN32
+        if (WaitForSingleObject(ghSemaphore, INFINITE) == WAIT_OBJECT_0) {
+        #else
+        sem_wait(&ghSemaphore);
+        #endif
+            while(1) {
+                if (current_thread_id >= MAX_THREAD) current_thread_id = 0;
+                if (!thread_room[current_thread_id]) {
+                    thread_room[current_thread_id] = 1;
+
+                    client[current_thread_id] = malloc(sizeof(http_client));
+                    memset(client[current_thread_id], 0, sizeof(http_client));
+                    string_init(&thread[current_thread_id]->req_raw_data);
+
+                    thread[current_thread_id]->callback = callback;
+                    thread[current_thread_id]->client = client[current_thread_id];
+                    client[current_thread_id]->socket = c_socket;
+                    thread[current_thread_id]->selected_thread_room = &thread_room[current_thread_id];
+
+                    #ifdef _WIN32
+                    thread[current_thread_id]->thread_handle = CreateThread(0, 0, http_handle_client, thread[current_thread_id], 0, NULL);
+                    #else
+                    pthread_t temp_thread;
+                    pthread_create(&temp_thread, NULL, http_handle_client, thread[current_thread_id]);
+                    pthread_detach(temp_thread);
+                    #endif
+
+                    current_thread_id++;
+                    break;
+                } else current_thread_id++;
+            }
+        #ifdef _WIN32
+        }
+        #endif
+    }
+
+    #ifdef _WIN32
+    CloseHandle(ghSemaphore);
+    #else
+    sem_destroy(&ghSemaphore);
     #endif
 }
