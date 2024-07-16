@@ -8,6 +8,8 @@
 #include <winsock2.h>
 #include <Windows.h>
 #include <ws2tcpip.h>
+
+#define http_close_socket(socket) closesocket(socket)
 #else
 #include <unistd.h>
 #include <pthread.h>
@@ -20,8 +22,10 @@
 #include <netdb.h>
 #include <fcntl.h>
 #include <ctype.h>
+
 #define SOCKET int
 #define SD_SEND SHUT_WR
+#define http_close_socket(socket) close(socket)
 #endif
 
 #include "string_lib.h"
