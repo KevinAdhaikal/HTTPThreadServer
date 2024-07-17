@@ -37,6 +37,8 @@ typedef struct {
 
 typedef struct {
     SOCKET socket;
+
+    // Parsing result
     http_string method;
     http_string path;
     char* query_pointer;

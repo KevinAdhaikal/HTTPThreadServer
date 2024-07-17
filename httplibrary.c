@@ -7,9 +7,9 @@
 typedef struct {
     http_client* client;
     http_callback callback;
-    string req_raw_data;
     char* selected_thread_room;
     HANDLE thread_handle;
+    string req_raw_data; // HTTP Request raw data
 } http_thread;
 
 #ifdef _WIN32
@@ -151,6 +151,7 @@ http_handle_client(void* arg) {
     http_thread* thread = arg;
     http_client* client = thread->client;
 
+    string_init(&thread->req_raw_data);
     char recvbuf[TEMP_BUFFER_LEN];
     unsigned int recv_res = 0;
 
@@ -229,7 +230,6 @@ http_handle_client(void* arg) {
     THREAD_EXIT:
     http_close_socket(client->socket);
     string_finalize(&thread->req_raw_data);
-    free(client);
     
     #ifdef _WIN32
     ReleaseSemaphore(ghSemaphore, 1, NULL);
@@ -237,8 +237,6 @@ http_handle_client(void* arg) {
     sem_post(&ghSemaphore);
     #endif
 
-    thread->client = NULL;
-    thread->callback = NULL;
     *thread->selected_thread_room = 0;
 
     #ifdef _WIN32
@@ -261,16 +259,13 @@ void http_start(SOCKET s_socket, http_callback callback) {
 
     SOCKET c_socket;
     
-    http_thread* thread[MAX_THREAD];
-    http_client* client[MAX_THREAD];
+    http_thread thread[MAX_THREAD];
+    http_client client[MAX_THREAD];
+
     char* thread_room = malloc(MAX_THREAD);
     memset(thread_room, 0, MAX_THREAD);
+    memset(client, 0, sizeof(http_client) * MAX_THREAD);
 
-    for (int a = 0; a < MAX_THREAD; a++) {
-        thread[a] = malloc(sizeof(http_thread));
-        memset(thread[a], 0, sizeof(http_thread));
-    }
-    
     unsigned int current_thread_id = 0;
 
     fd_set readfds;
@@ -306,29 +301,30 @@ void http_start(SOCKET s_socket, http_callback callback) {
         #endif
             while(1) {
                 if (current_thread_id >= MAX_THREAD) current_thread_id = 0;
-                if (!thread_room[current_thread_id]) {
-                    thread_room[current_thread_id] = 1;
-
-                    client[current_thread_id] = malloc(sizeof(http_client));
-                    memset(client[current_thread_id], 0, sizeof(http_client));
-                    string_init(&thread[current_thread_id]->req_raw_data);
-
-                    thread[current_thread_id]->callback = callback;
-                    thread[current_thread_id]->client = client[current_thread_id];
-                    client[current_thread_id]->socket = c_socket;
-                    thread[current_thread_id]->selected_thread_room = &thread_room[current_thread_id];
-
-                    #ifdef _WIN32
-                    thread[current_thread_id]->thread_handle = CreateThread(0, 0, http_handle_client, thread[current_thread_id], 0, NULL);
-                    #else
-                    pthread_t temp_thread;
-                    pthread_create(&temp_thread, NULL, http_handle_client, thread[current_thread_id]);
-                    pthread_detach(temp_thread);
-                    #endif
-
+                if (thread_room[current_thread_id]) {
                     current_thread_id++;
-                    break;
-                } else current_thread_id++;
+                    continue;
+                }
+
+                thread_room[current_thread_id] = 1;
+
+                client[current_thread_id].socket = c_socket;
+                thread[current_thread_id] = (http_thread){
+                    &client[current_thread_id],
+                    callback,
+                    &thread_room[current_thread_id],
+                    CreateThread(0, 0, http_handle_client, &thread[current_thread_id], 0, NULL),
+                    NULL
+                };
+                
+                #ifndef _WIN32
+                pthread_t temp_thread;
+                pthread_create(&temp_thread, NULL, http_handle_client, thread[current_thread_id]);
+                pthread_detach(temp_thread);
+                #endif
+
+                current_thread_id++;
+                break;
             }
         #ifdef _WIN32
         }
