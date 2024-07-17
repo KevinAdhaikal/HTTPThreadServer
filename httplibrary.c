@@ -104,8 +104,8 @@ char* http_get_header(http_client* client, const char* key) {
             if (cur_len == key_len) return headers_pointer + 2;
         }
 
-        for (; *headers_pointer != '\1'; headers_pointer++);
-        if (*(headers_pointer + 1) == '\0' && *(headers_pointer + 2) == '\0') return NULL;
+        for (; *headers_pointer != '\0'; headers_pointer++);
+        if (*(headers_pointer + 1) == '\r' || *(headers_pointer + 1) == '\0') return NULL;
         headers_pointer++;
     }
 }
@@ -203,11 +203,10 @@ http_handle_client(void* arg) {
 
     while(1) {
         if (*cur_pos == '\n') {
-            if (*(cur_pos - 1) == '\r') *(cur_pos - 1) = 0, *cur_pos++ = 1;
-            else *cur_pos++ = 1;
+            *cur_pos++ = 0;
 
             if (*cur_pos == '\r' && *(cur_pos + 1) == '\n') {
-                *cur_pos++ = 0, *cur_pos++ = 0;
+                *++cur_pos = 0;
                 break;
             }
             if (*cur_pos == '\n') {
