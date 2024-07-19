@@ -8,7 +8,9 @@ typedef struct {
     http_client* client;
     http_callback callback;
     char* selected_thread_room;
+    #ifdef _WIN32
     HANDLE thread_handle;
+    #endif
     string req_raw_data; // HTTP Request raw data
 } http_thread;
 
@@ -225,7 +227,7 @@ http_handle_client(void* arg) {
     
     thread->callback(client);
 
-    shutdown(client->socket, SD_SEND);
+    shutdown(client->socket, SD_BOTH);
 
     THREAD_EXIT:
     http_close_socket(client->socket);
@@ -265,6 +267,7 @@ void http_start(SOCKET s_socket, http_callback callback) {
     char* thread_room = malloc(MAX_THREAD);
     memset(thread_room, 0, MAX_THREAD);
     memset(client, 0, sizeof(http_client) * MAX_THREAD);
+    memset(thread, 0, sizeof(http_thread) * MAX_THREAD);
 
     unsigned int current_thread_id = 0;
 
@@ -309,17 +312,22 @@ void http_start(SOCKET s_socket, http_callback callback) {
                 thread_room[current_thread_id] = 1;
 
                 client[current_thread_id].socket = c_socket;
+
                 thread[current_thread_id] = (http_thread){
                     &client[current_thread_id],
                     callback,
                     &thread_room[current_thread_id],
+                    #ifdef _WIN32
                     CreateThread(0, 0, http_handle_client, &thread[current_thread_id], 0, NULL),
+                    #else
+                    NULL,
+                    #endif
                     NULL
                 };
-                
+
                 #ifndef _WIN32
                 pthread_t temp_thread;
-                pthread_create(&temp_thread, NULL, http_handle_client, thread[current_thread_id]);
+                pthread_create(&temp_thread, NULL, http_handle_client, &thread[current_thread_id]);
                 pthread_detach(temp_thread);
                 #endif
 

@@ -24,7 +24,7 @@
 #include <ctype.h>
 
 #define SOCKET int
-#define SD_SEND SHUT_WR
+#define SD_BOTH SHUT_RDWR
 #define http_close_socket(socket) close(socket)
 #endif
 
