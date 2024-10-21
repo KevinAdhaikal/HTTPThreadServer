@@ -206,8 +206,10 @@ http_handle_client(void* arg) {
 
     while(1) {
         if (*cur_pos == '\n') {
+            if (*(cur_pos - 1) == '\r') *(cur_pos - 1) = 0;
             *cur_pos++ = 0;
-
+            if (*cur_pos == 0) break;
+            
             if (*cur_pos == '\r' && *(cur_pos + 1) == '\n') {
                 *++cur_pos = 0;
                 break;
@@ -219,6 +221,7 @@ http_handle_client(void* arg) {
         }
         cur_pos++;
     }
+
     client->headers_length = cur_pos - s_header_pos;
     
     // HTTP Body
