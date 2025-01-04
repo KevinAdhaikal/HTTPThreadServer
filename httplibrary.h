@@ -6,8 +6,9 @@
 
 #ifdef _WIN32
 #include <winsock2.h>
-#include <Windows.h>
+#include <windows.h>
 #include <ws2tcpip.h>
+#include <mswsock.h>
 
 #define http_close_socket(socket) closesocket(socket)
 #else
@@ -17,7 +18,9 @@
 #include <arpa/inet.h>
 #include <sys/socket.h>
 #include <sys/types.h>
+#include <sys/stat.h>
 #include <sys/select.h>
+#include <sys/sendfile.h>
 #include <netinet/in.h>
 #include <netdb.h>
 #include <fcntl.h>
@@ -55,6 +58,8 @@ typedef void (*http_callback)(http_client*);
 char* http_get_query(http_client* client, const char* key); // HTTP Get Query
 char* http_get_header(http_client* client, const char* key); // HTTP Get Header
 char* http_get_cookie(http_client* client, const char* key); // HTTP Get Cookie
+char http_write(SOCKET s, const char* data, unsigned long long int size); // HTTP Write
+char http_send_file(SOCKET s, const char* name_file, char manual_code); // HTTP Send File
 
 SOCKET http_init_socket(const char* ip, unsigned short port); // initilaize socket
 void http_start(SOCKET s_socket, http_callback callback); // Start HTTP
