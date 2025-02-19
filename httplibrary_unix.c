@@ -362,7 +362,7 @@ void* http_post_send_handle(void* args) {
     room->callback(room->client);
 
     clean_room(room);
-    pthread_exit(NULL);
+    return NULL;
 }
 
 void http_start(http* http) {
@@ -517,6 +517,7 @@ void http_start(http* http) {
                 } else if (client_events[a].events & EPOLLOUT) {
                     http_room* room = (http_room*)client_events[a].data.ptr;
                     pthread_create(&room->thread_id, NULL, http_post_send_handle, (void*)room);
+                    pthread_detach(room->thread_id);
                 }
             }
         }
