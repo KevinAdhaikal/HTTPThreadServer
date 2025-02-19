@@ -60,37 +60,54 @@ typedef struct {
     struct sockaddr_in addr;
 } http_client;
 
-typedef void (*http_callback)(http_client*);
+typedef void (*http_callback)(http_client);
 
 typedef struct {
     #ifndef _WIN32
     pthread_t thread_id;
+    #else
+    OVERLAPPED overlapped;
     #endif
-    http_callback callback;
     buffer req_raw_data;
-    http_client* client;
+    http_client client;
+    http_callback callback;
     cmp_stream_stat status;
     size_t body_len_remaining;
     char no_need_check_request;
+    char temporary_data[HTTP_TEMPORARY_MAX_BUFFER];
 } http_room;
 
 typedef struct {
     char still_on; // memberi tahu bahwa server ini masih on atau off
-    size_t max_sockets; // buat nge cek max threadsd
+    #ifdef _WIN32
+    size_t max_threads; // buat nge cek max thread
+    #else
+    size_t max_sockets; // buat nge cek max socket
+    #endif
     SOCKET server_socket; // server socket nya
-    http_room* thread_rooms; // isi isi room untuk http.
+    #ifndef _WIN32
+    http_room* thread_rooms; // isi isi room untuk http. (untuk linux)
+    #else
+    HANDLE iocp; // IOCP (untuk windows)
+    #endif
+    http_callback callback;
 } http;
 
 #define http_get_query(query_pointer, key) __http_get_query(query_pointer, key, sizeof(key) - 1) // HTTP Get Query
 #define http_get_header(headers_pointer, key) __http_get_header(headers_pointer, key, sizeof(key) - 1) // HTTP Get Header
 char* __http_get_query(char* query_pointer, const char* key, size_t key_len); // HTTP Get Query
 char* __http_get_header(char* headers_pointer, const char* key, size_t key_len); // HTP Get Header
-char* http_get_cookie(http_client* client, const char* key); // HTTP Get Cookie
-char http_write(http_client* client, const char* data, size_t size); // HTTP Write
+char* http_get_cookie(http_client client, const char* key); // HTTP Get Cookie
+char http_write(http_client client, const char* data, size_t size); // HTTP Write
 #define http_write_string(client, str) http_write(client, str, sizeof(str) - 1) // HTTP Write String
-char http_send_file(http_client* client, const char* name_file, char manual_code, char use_cache); // HTTP Send File
+char http_send_file(http_client client, const char* name_file, char manual_code, char use_cache); // HTTP Send File
 
+#ifdef _WIN32
 http* http_init_socket(const char* ip, unsigned short port, size_t max_threads, http_callback callback); // initilaize socket
+#else
+http* http_init_socket(const char* ip, unsigned short port, size_t max_sockets, http_callback callback); // initilaize socket
+#endif
+
 void http_start(http* http); // Start HTTP
 void http_stop(http* http); // Stop HTTP
 
