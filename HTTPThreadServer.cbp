@@ -34,11 +34,11 @@
 		<Unit filename="example.c">
 			<Option compilerVar="CC" />
 		</Unit>
-		<Unit filename="httplibrary.c">
+		<Unit filename="httplibrary_unix.c">
 			<Option compilerVar="CC" />
 		</Unit>
 		<Unit filename="httplibrary.h" />
-		<Unit filename="string_lib.c">
+		<Unit filename="buffer_lib.c">
 			<Option compilerVar="CC" />
 		</Unit>
 		<Unit filename="string_lib.h" />
