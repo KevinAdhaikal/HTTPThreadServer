@@ -21,8 +21,12 @@
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <sys/stat.h>
-#include <sys/sendfile.h>
+#ifdef defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__NetBSD__) || defined(__DragonFly__)
+#include <sys/event.h>
+#else
 #include <sys/epoll.h>
+#endif
+#include <sys/sendfile.h>
 #include <netinet/in.h>
 #include <netdb.h>
 #include <fcntl.h>
