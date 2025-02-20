@@ -25,8 +25,8 @@
 #include <sys/event.h>
 #else
 #include <sys/epoll.h>
-#endif
 #include <sys/sendfile.h>
+#endif
 #include <netinet/in.h>
 #include <netdb.h>
 #include <fcntl.h>
