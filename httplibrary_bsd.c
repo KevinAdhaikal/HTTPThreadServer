@@ -184,7 +184,7 @@ http* http_init_socket(const char* ip, unsigned short port, size_t max_sockets, 
     }
 
     // listen socket
-    if (listen(r_socket, max_sockets) == -1) {
+    if (listen(r_socket, SOMAXCONN) == -1) {
         printf("listen error!\n");
         close(r_socket);
         return NULL;
