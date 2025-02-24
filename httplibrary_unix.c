@@ -1,29 +1,17 @@
 // TODO: Close socket yang idle
 
 #ifndef _WIN32
-#include <stdio.h>
-#include <unistd.h>
-#include <pthread.h>
-#include <sys/epoll.h>
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <time.h>
-
-#include <stdlib.h>
-#include <string.h>
-#include <fcntl.h>
-
 #include "httplibrary.h"
 
 #define strcmp_last(data, data_len, target) !strcmp(data + (data_len - (sizeof(target) - 1)), target)
 #define clean_room(room) \
-close(room->client->socket); \
-memset(room->client, 0, sizeof(http_client)); \
+close(room->client.socket); \
+memset(&room->client, 0, sizeof(http_client)); \
 buffer_begin_reinit(&room->req_raw_data); \
 room->no_need_check_request = 0; \
 room->body_len_remaining = 0
 
-static char cmp_stream(cmp_stream_stat* status, char* data, size_t data_len, const char* target, size_t target_len, size_t* index_output) {
+static char cmp_stream(size_t* status, char* data, size_t data_len, const char* target, size_t target_len, size_t* index_output) {
     size_t match = *status;
 
     // Jika ada pencocokan parsial sebelumnya, lanjutkan pencarian dari sana
@@ -128,7 +116,7 @@ char* __http_get_query(char* query_pointer, const char* key, size_t key_len) {
 char* __http_get_header(char* headers_pointer, const char* key, size_t key_len) {
     while(1) {
         if (strcasecmp(headers_pointer, key) == ':') {
-            return headers_pointer + (key_len + 7);
+            return headers_pointer + (key_len + 2);
         }
         headers_pointer = strchr(headers_pointer, '\0') + 2;
         if (*headers_pointer == 0) return NULL;
@@ -344,10 +332,8 @@ http* http_init_socket(const char* ip, unsigned short port, size_t max_sockets, 
     result->server_socket = r_socket;
     result->max_sockets = max_sockets;
     result->thread_rooms = (http_room*)malloc(max_sockets * sizeof(http_room));
-
+    memset(result->thread_rooms, 0, max_sockets * sizeof(http_room));
     for (size_t a = 0; a < max_sockets; a++) {
-        result->thread_rooms[a].client = (http_client*)malloc(sizeof(http_client));
-        memset(result->thread_rooms[a].client, 0, sizeof(http_client));
         buffer_init(&result->thread_rooms[a].req_raw_data);
         result->thread_rooms[a].callback = callback;
     }
@@ -356,10 +342,10 @@ http* http_init_socket(const char* ip, unsigned short port, size_t max_sockets, 
     return result;
 }
 
-void* http_post_send_handle(void* args) {
+static void* http_post_send_handle(void* args) {
     http_room* room = args;
     
-    room->callback(room->client);
+    room->callback(&room->client);
 
     clean_room(room);
     return NULL;
@@ -369,29 +355,31 @@ void http_start(http* http) {
     SOCKET epoll_fd = epoll_create1(0);
 
     int client_fd, nfds;
-    struct epoll_event event;
-    event.events = EPOLLIN;
-    event.data.fd = http->server_socket;
-    epoll_ctl(epoll_fd, EPOLL_CTL_ADD, http->server_socket, &event);
+    struct epoll_event event_set;
+    event_set.events = EPOLLIN;
+    event_set.data.fd = http->server_socket;
+    epoll_ctl(epoll_fd, EPOLL_CTL_ADD, http->server_socket, &event_set);
 
     struct epoll_event* client_events;
     client_events = (struct epoll_event*)malloc(http->max_sockets * sizeof(struct epoll_event));
 
     while(http->still_on) {
         nfds = epoll_wait(epoll_fd, client_events, http->max_sockets, -1);
+        if (nfds == -1) continue;
         for (int a = 0; a < nfds; a++) {
             if (client_events[a].data.fd == http->server_socket) {
-                while ((client_fd = accept(http->server_socket, NULL, NULL)) != -1) {
+                client_fd = accept(http->server_socket, NULL, NULL);
+                if (client_fd > 0) {
                     for (int a = 0; a < http->max_sockets; a++) {
-                        if (http->thread_rooms[a].client->socket == 0) {
+                        if (http->thread_rooms[a].client.socket == 0) {
                             // set socket client menjadi non-blocking
                             fcntl(client_fd, F_SETFL, fcntl(client_fd, F_GETFL, 0) | O_NONBLOCK);
-                            http->thread_rooms[a].client->socket = client_fd;
-
+                            http->thread_rooms[a].client.socket = client_fd;
+    
                             // untuk client fd
-                            event.events = EPOLLIN;
-                            event.data.ptr = &http->thread_rooms[a];
-                            epoll_ctl(epoll_fd, EPOLL_CTL_ADD, client_fd, &event);
+                            event_set.events = EPOLLIN;
+                            event_set.data.ptr = &http->thread_rooms[a];
+                            epoll_ctl(epoll_fd, EPOLL_CTL_ADD, client_fd, &event_set);
                             break;
                         }
                     }
@@ -401,83 +389,82 @@ void http_start(http* http) {
                     http_room* room = (http_room*)client_events[a].data.ptr;
 
                     char data[HTTP_TEMPORARY_MAX_BUFFER]; // temporary data, dan di masukkan ke req_raw_data menggunakan buffer_append_n().
-                    size_t total_recv = recv(room->client->socket, data, 1024, 0);
+                    size_t total_recv = recv(room->client.socket, data, 1024, 0);
 
                     if (total_recv > 0) {
                         buffer_append_n(&room->req_raw_data, data, total_recv);
                         size_t remaining_output;
 
-                        if (!room->no_need_check_request && cmp_stream(&room->status, data, total_recv, "\r\n\r\n", 4, &remaining_output) == 2) {
+                        if (!room->no_need_check_request && cmp_stream(&room->cmp_stream_status, data, total_recv, "\r\n\r\n", 4, &remaining_output) == 2) {
                             // WAKTUNYA PARSING HTTP!
-
                             room->no_need_check_request = 1;
                             char* cur_pos = room->req_raw_data.val;
 
                             // HTTP Method Parsing
-                            room->client->method.val = cur_pos;
+                            room->client.method.val = cur_pos;
                             cur_pos = strchr(cur_pos, ' ');
                             if (cur_pos == 0) {
-                                http_write_string(room->client, "HTTP/1.1 400 Bad Request\r\n\r\n");
+                                http_write_string(&room->client, "HTTP/1.1 400 Bad Request\r\n\r\n");
                                 clean_room(room);
-                                epoll_ctl(epoll_fd, EPOLL_CTL_DEL, room->client->socket, NULL);
+                                epoll_ctl(epoll_fd, EPOLL_CTL_DEL, room->client.socket, NULL);
                                 continue;
                             }
-                            room->client->method.len = cur_pos - room->client->method.val;
+                            room->client.method.len = cur_pos - room->client.method.val;
                             
                             *cur_pos++ = 0;
 
                             // HTTP Path Parsing
-                            room->client->path.val = cur_pos;
+                            room->client.path.val = cur_pos;
                             cur_pos = strchr(cur_pos, ' ');
                             
                             if (cur_pos == 0) {
-                                http_write_string(room->client, "HTTP/1.1 400 Bad Request\r\n\r\n");
+                                http_write_string(&room->client, "HTTP/1.1 400 Bad Request\r\n\r\n");
                                 clean_room(room);
-                                epoll_ctl(epoll_fd, EPOLL_CTL_DEL, room->client->socket, NULL);
+                                epoll_ctl(epoll_fd, EPOLL_CTL_DEL, room->client.socket, NULL);
                                 continue;
                             }
 
                             *cur_pos = 0;
 
                             // Query parsing
-                            room->client->query_pointer = strchr(room->client->path.val, '?');
+                            room->client.query_pointer = strchr(room->client.path.val, '?');
 
-                            if (room->client->query_pointer) {
-                                room->client->path.len = room->client->query_pointer - room->client->path.val;
-                                *room->client->query_pointer++ = 0;
+                            if (room->client.query_pointer) {
+                                room->client.path.len = room->client.query_pointer - room->client.path.val;
+                                *room->client.query_pointer++ = 0;
 
-                                char *param = room->client->query_pointer;
+                                char *param = room->client.query_pointer;
                                 while (param && (param = strchr(param, '&'))) *param++ = 0;
                             }
-                            else room->client->path.len = cur_pos - room->client->path.val;
+                            else room->client.path.len = cur_pos - room->client.path.val;
 
                             cur_pos++;
 
                             // HTTP Version
-                            room->client->version.val = cur_pos;
+                            room->client.version.val = cur_pos;
 
                             cur_pos = strchr(cur_pos, '\r');
                             if (cur_pos == 0) {
-                                http_write_string(room->client, "HTTP/1.1 400 Bad Request\r\n\r\n");
+                                http_write_string(&room->client, "HTTP/1.1 400 Bad Request\r\n\r\n");
                                 clean_room(room);
-                                epoll_ctl(epoll_fd, EPOLL_CTL_DEL, room->client->socket, NULL);
+                                epoll_ctl(epoll_fd, EPOLL_CTL_DEL, room->client.socket, NULL);
                                 continue;
                             }
 
                             *(short*)cur_pos = 0;
-                            room->client->version.len = cur_pos - room->client->version.val;
+                            room->client.version.len = cur_pos - room->client.version.val;
                             cur_pos += 2;
 
                             // HTTP Headers
-                            room->client->cookie_pointer = NULL;
-                            room->client->headers_pointer = cur_pos;
+                            room->client.cookie_pointer = NULL;
+                            room->client.headers_pointer = cur_pos;
 
                             HEADER_PARSING:
                             cur_pos = strchr(cur_pos, '\r');
                             if (cur_pos == NULL) {
-                                http_write_string(room->client, "HTTP/1.1 400 Bad Request\r\n\r\n");
+                                http_write_string(&room->client, "HTTP/1.1 400 Bad Request\r\n\r\n");
                                 clean_room(room);
-                                epoll_ctl(epoll_fd, EPOLL_CTL_DEL, room->client->socket, NULL);
+                                epoll_ctl(epoll_fd, EPOLL_CTL_DEL, room->client.socket, NULL);
                                 continue;
                             }
                             if (*(int*)cur_pos == 0x0a0d0a0d) *(int*)cur_pos = 0, cur_pos += 4;
@@ -487,30 +474,30 @@ void http_start(http* http) {
                             }
 
                             // HTTP Body Data
-                            room->client->body.val = cur_pos;
-                            room->client->body.len = total_recv - (cur_pos - room->client->method.val);
+                            room->client.body.val = cur_pos;
+                            room->client.body.len = total_recv - (cur_pos - room->client.method.val);
 
-                            const char* c_len = http_get_header(room->client->headers_pointer, "content-length");
+                            const char* c_len = http_get_header(room->client.headers_pointer, "content-length");
                             if (c_len) room->body_len_remaining = strtoull(c_len, NULL, 10);
 
-                            if (room->client->body.len >= room->body_len_remaining) {
-                                event.events = EPOLLOUT | EPOLLONESHOT;
-                                event.data.ptr = client_events[a].data.ptr;
-                                epoll_ctl(epoll_fd, EPOLL_CTL_MOD, room->client->socket, &event);
+                            if (room->client.body.len >= room->body_len_remaining) {
+                                event_set.events = EPOLLOUT | EPOLLONESHOT;
+                                event_set.data.ptr = client_events[a].data.ptr;
+                                epoll_ctl(epoll_fd, EPOLL_CTL_MOD, room->client.socket, &event_set);
                             }
                         }
                     }
                     else if (total_recv < 0) {
                         // ngecek data dulu ngab
-                        if (room->client->body.len >= room->body_len_remaining) {
-                            event.events = EPOLLOUT | EPOLLONESHOT;
-                            event.data.ptr = client_events[a].data.ptr;
-                            epoll_ctl(epoll_fd, EPOLL_CTL_MOD, room->client->socket, &event);
+                        if (room->client.body.len >= room->body_len_remaining) {
+                            event_set.events = EPOLLOUT | EPOLLONESHOT;
+                            event_set.data.ptr = client_events[a].data.ptr;
+                            epoll_ctl(epoll_fd, EPOLL_CTL_MOD, room->client.socket, &event_set);
                         }
                     }
                     else { // jika client disconnect.
-                        close(room->client->socket);
-                        epoll_ctl(epoll_fd, EPOLL_CTL_DEL, room->client->socket, NULL);
+                        close(room->client.socket);
+                        epoll_ctl(epoll_fd, EPOLL_CTL_DEL, room->client.socket, NULL);
                         continue;
                     }
                     
@@ -522,5 +509,20 @@ void http_start(http* http) {
             }
         }
     }
+
+    free(client_events);
+    close(epoll_fd);
+    
+    for (int a = 0; a < http->max_sockets; a++) buffer_finalize(&http->thread_rooms[a].req_raw_data);
+
+    free(http->thread_rooms);
+    free(http);
 }
+
+void http_stop(http* http) {
+    http->still_on = 0;
+    close(http->server_socket);
+    http->server_socket = 0;
+}
+
 #endif

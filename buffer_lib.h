@@ -1,10 +1,9 @@
-#ifndef STRING_LIB_HEADER
-#define STRING_LIB_HEADER
+#ifndef BUFFER_LIB_HEADER
+#define BUFFER_LIB_HEADER
 
 #include <stdio.h>
 #include <string.h>
 #include <stdint.h> 
-
 
 typedef struct {
     char* val;
@@ -20,4 +19,4 @@ void buffer_begin(buffer* str);
 void buffer_begin_reinit(buffer* str);
 void buffer_finalize(buffer* str);
 
-#endif //STRING_LIB_HEADER
+#endif //BUFFER_LIB_HEADER

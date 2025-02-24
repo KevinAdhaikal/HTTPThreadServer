@@ -55,7 +55,6 @@ void buffer_begin_reinit(buffer* buf) {
         buf->len = 0;
         buf->alloc_cur = DEFAULT_INIT_SIZE;
     }
-    
 }
 
 void buffer_finalize(buffer* buf) {

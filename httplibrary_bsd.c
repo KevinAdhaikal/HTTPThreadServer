@@ -9,7 +9,7 @@ buffer_begin_reinit(&room->req_raw_data); \
 room->no_need_check_request = 0; \
 room->body_len_remaining = 0
 
-static char cmp_stream(cmp_stream_stat* status, char* data, size_t data_len, const char* target, size_t target_len, size_t* index_output) {
+static char cmp_stream(size_t* status, char* data, size_t data_len, const char* target, size_t target_len, size_t* index_output) {
     size_t match = *status;
 
     // Jika ada pencocokan parsial sebelumnya, lanjutkan pencarian dari sana
@@ -121,11 +121,11 @@ char* __http_get_header(char* headers_pointer, const char* key, size_t key_len) 
     }
 }
 
-char* http_get_cookie(http_client client, const char* key) {
-    char* cookie_pointer = client.cookie_pointer;
+char* http_get_cookie(http_client* client, const char* key) {
+    char* cookie_pointer = client->cookie_pointer;
     if (cookie_pointer == NULL) { // kita parsing dulu jika cookie_pointer nya kosong
-        client.cookie_pointer = http_get_header(client.headers_pointer, "Cookie");
-        cookie_pointer = client.cookie_pointer;
+        client->cookie_pointer = http_get_header(client->headers_pointer, "Cookie");
+        cookie_pointer = client->cookie_pointer;
         if (cookie_pointer == NULL) return NULL;
 
         while(*cookie_pointer != '\0' && *cookie_pointer != '\1') {
@@ -134,7 +134,7 @@ char* http_get_cookie(http_client client, const char* key) {
                 if (*cookie_pointer == ' ') *cookie_pointer++ = '\2';
             } else cookie_pointer++;
         }
-        cookie_pointer = client.cookie_pointer;
+        cookie_pointer = client->cookie_pointer;
     }
 
     size_t cur_len = 0, key_len = strlen(key);
@@ -154,8 +154,8 @@ char* http_get_cookie(http_client client, const char* key) {
     }
 }
 
-char http_write(http_client client, const char* data, size_t size) {
-    if (send(client.socket, data, size, 0) <= 0) return -2;
+char http_write(http_client* client, const char* data, size_t size) {
+    if (send(client->socket, data, size, 0) <= 0) return -2;
     return 0;
 }
 
@@ -215,7 +215,7 @@ http* http_init_socket(const char* ip, unsigned short port, size_t max_sockets, 
 static void* http_post_send_handle(void* args) {
     http_room* room = args;
     
-    room->callback(room->client);
+    room->callback(&room->client);
     
     clean_room(room);
     return NULL;
@@ -226,7 +226,7 @@ void http_start(http* http) {
 
     int client_fd, nfds;
     struct kevent event_set;
-    struct kevent* event_clients = (struct kevent*)malloc(1024 * sizeof(struct kevent));
+    struct kevent* event_clients = (struct kevent*)malloc(http->max_sockets * sizeof(struct kevent));
 
     EV_SET(&event_set, http->server_socket, EVFILT_READ, EV_ADD, 0, 0, NULL);
     kevent(kqueue_fd, &event_set, 1, NULL, 0, NULL);
@@ -261,7 +261,7 @@ void http_start(http* http) {
                         buffer_append_n(&room->req_raw_data, data, total_recv);
                         size_t remaining_output;
 
-                        if (!room->no_need_check_request && cmp_stream(&room->status, data, total_recv, "\r\n\r\n", 4, &remaining_output) == 2) {
+                        if (!room->no_need_check_request && cmp_stream(&room->cmp_stream_status, data, total_recv, "\r\n\r\n", 4, &remaining_output) == 2) {
                             // WAKTUNYA PARSING HTTP!
                             room->no_need_check_request = 1;
                             char* cur_pos = room->req_raw_data.val;
@@ -270,7 +270,7 @@ void http_start(http* http) {
                             room->client.method.val = cur_pos;
                             cur_pos = strchr(cur_pos, ' ');
                             if (cur_pos == 0) {
-                                http_write_string(room->client, "HTTP/1.1 400 Bad Request\r\n\r\n");
+                                http_write_string(&room->client, "HTTP/1.1 400 Bad Request\r\n\r\n");
                                 clean_room(room);
                                 EV_SET(&event_set, event_fd, EVFILT_READ, EV_DELETE, 0, 0, NULL);
                                 kevent(kqueue_fd, &event_set, 1, NULL, 0, NULL);
@@ -285,7 +285,7 @@ void http_start(http* http) {
                             cur_pos = strchr(cur_pos, ' ');
                             
                             if (cur_pos == 0) {
-                                http_write_string(room->client, "HTTP/1.1 400 Bad Request\r\n\r\n");
+                                http_write_string(&room->client, "HTTP/1.1 400 Bad Request\r\n\r\n");
                                 clean_room(room);
                                 EV_SET(&event_set, event_fd, EVFILT_READ, EV_DELETE, 0, 0, NULL);
                                 kevent(kqueue_fd, &event_set, 1, NULL, 0, NULL);
@@ -313,7 +313,7 @@ void http_start(http* http) {
 
                             cur_pos = strchr(cur_pos, '\r');
                             if (cur_pos == 0) {
-                                http_write_string(room->client, "HTTP/1.1 400 Bad Request\r\n\r\n");
+                                http_write_string(&room->client, "HTTP/1.1 400 Bad Request\r\n\r\n");
                                 clean_room(room);
                                 EV_SET(&event_set, event_fd, EVFILT_READ, EV_DELETE, 0, 0, NULL);
                                 kevent(kqueue_fd, &event_set, 1, NULL, 0, NULL);
@@ -331,7 +331,7 @@ void http_start(http* http) {
                             HEADER_PARSING:
                             cur_pos = strchr(cur_pos, '\r');
                             if (cur_pos == NULL) {
-                                http_write_string(room->client, "HTTP/1.1 400 Bad Request\r\n\r\n");
+                                http_write_string(&room->client, "HTTP/1.1 400 Bad Request\r\n\r\n");
                                 clean_room(room);
                                 EV_SET(&event_set, event_fd, EVFILT_READ, EV_DELETE, 0, 0, NULL);
                                 kevent(kqueue_fd, &event_set, 1, NULL, 0, NULL);
@@ -388,5 +388,19 @@ void http_start(http* http) {
             }
         }
     }
+
+    free(event_clients);
+    close(kqueue_fd);
+
+    for (int a = 0; a < http->max_sockets; a++) buffer_finalize(&http->thread_rooms[a].req_raw_data);
+
+    free(http->thread_rooms);
+    free(http);
+}
+
+void http_stop(http* http) {
+    close(http->server_socket);
+    http->server_socket = 0;
+    http->still_on = 0;
 }
 #endif
